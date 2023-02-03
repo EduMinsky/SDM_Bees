@@ -1,0 +1,332 @@
+#This is a ongoing side project where I want to understand how climate change can affect the distribution of brazilian bees.
+
+```{r reading excel sheet with bee names}
+#After Searching brazilian bees in papers and  Moure Bee Catalog : http://moure.cria.org.br/ I have created a list with possible bee candidates for this exercise
+especies = read.csv2('D:\\Eduardo_Minsky\\Especies_Abelhas\\Lista_especies_Abelhas.csv')
+lista_especie=paste(especies$Genero,especies$Especie)
+```
+
+```{r How many records there is for each bee spp}
+library(rgbif,tidyverse)
+#Getting GBIF Key spp:
+name=list()
+for(i in 1:length(lista_especie)){name[[i]] = name_suggest(q = lista_especie[[i]])}
+
+key_gbif=list()
+for(i in 1:length(name)){
+  if(!is.null(name[[i]]$data$key[[1]])==TRUE){
+    key_gbif[[i]]=name[[i]]$data[1,]
+  }else{print(i)}
+}
+#Excluding  Null Values:
+key_gbif=key_gbif[lengths(key_gbif) != 0]
+#Creating a list with number of records for each spp:
+number_records=list()
+for(i in 1:length(key_gbif)){
+  w =occ_search(taxonKey = key_gbif[[i]]$key,hasCoordinate = TRUE,limit = 10,country='BR')
+  number_records[[i]]=w$meta$count
+}
+#Transforming this list into DF
+number_records_df=do.call(rbind, lapply(number_records, data.frame, stringsAsFactors=FALSE))
+
+df_key_gbif=do.call(rbind, lapply(key_gbif, data.frame, stringsAsFactors=FALSE))
+df_key_gbif$N_records=number_records_df$X..i..
+write.csv(df_key_gbif,'Abelhas_Nome_Registros.csv')
+```
+
+```{Downloading records for spp that has 3 or more}
+library(tidyverse)
+spp_name=read.csv('D:\\Eduardo_Minsky\\Especies_Abelhas\\Abelhas_Nome_Registros.csv')
+spp_name=spp_name%>%filter(N_records>=3)
+
+#Downloading all occ for each spp
+list_occ_spp=list()
+for(i in 1:length(spp_name$key)){list_occ_spp[[i]]=occ_search(taxonKey = spp_name$key[[i]],hasCoordinate = TRUE,limit = 100000,country='BR')}
+#Creating only data frames for each spp
+list_occ_spp_df=list()
+for(w in 1:length(list_occ_spp)){list_occ_spp_df[[w]]=list_occ_spp[[w]]$data}
+
+
+
+#First we are going to separate the spps that has a column for Year:
+list_df_without_year_spp=list()
+tidy_list_spp=list()
+for(w in 1:length(list_occ_spp_df)){
+  if('year'%in%colnames(list_occ_spp_df[[w]]==TRUE)){
+    tidy_list_spp[[w]]=list_occ_spp_df[[w]]%>%dplyr::select(species, decimalLongitude, decimalLatitude, countryCode,gbifID, family, taxonRank, year,basisOfRecord)
+  }else{
+    list_df_without_year_spp[[w]]=list_occ_spp_df[[w]]%>%dplyr::select(species, decimalLongitude, decimalLatitude, countryCode,gbifID, family, taxonRank,basisOfRecord)
+  }
+  
+}
+#Excluding Null Values:
+list_df_without_year_spp=list_df_without_year_spp[lengths(list_df_without_year_spp) != 0]
+tidy_list_spp=tidy_list_spp[lengths(tidy_list_spp) != 0]
+#Eulaema atleticana spp has no year record. However, this spp was described in the year of 2000, so since it was recently described we are going to keep it. However, spp Geotrigona aequinoctialis was described in the year of 1905 and sice we don't know if the record that we have is recent or not, we are going to delete it
+
+
+list_df_without_year_spp=list_df_without_year_spp[[1]]
+#Creating a list with all the spp names that has the variable year present:
+names_1=list()
+for(i in 1:length(tidy_list_spp)){
+  names_1[[i]]=tidy_list_spp[[i]]$species%>%unique()
+}
+#Saving:
+for(i in 1:length(tidy_list_spp)){write.csv(tidy_list_spp[[i]],paste0('D:\\Eduardo_Minsky\\Especies_Abelhas\\DataFrameEspecies\\',names_1[[i]],'.csv'))}
+
+write_csv(list_df_without_year_spp,'D:\\Eduardo_Minsky\\Especies_Abelhas\\DataFrameEspecies\\Eulaema atleticana.csv')
+```
+
+```{r Clearing spp records}
+library(tidyverse)
+files = list.files('D:\\Eduardo_Minsky\\Especies_Abelhas\\DataFrameEspecies\\',pattern='.csv$')
+df_list=list()
+for(i in 1:length(files)){
+  df_list[[i]]=read.csv(paste0('D:\\Eduardo_Minsky\\Especies_Abelhas\\DataFrameEspecies\\',files[[i]]))
+}
+#Removing Records without coordinates and Check if is true:
+for(i in 1:length(df_list)){df_list[[i]]=df_list[[i]]%>%filter(!is.na(decimalLongitude))%>%filter(!is.na(decimalLatitude))}
+
+for(i in 1:length(df_list)){print(df_list[[i]]$decimalLongitude%>%is.na()%>%unique())}
+
+for(i in 1:length(df_list)){print(df_list[[i]]$decimalLatitude%>%is.na()%>%unique())}
+
+#convert country code from ISO2c to ISO3c
+library(countrycode)
+for(i in 1:length(df_list)){
+  df_list[[i]]$countryCode = countrycode(df_list[[i]]$countryCode, origin =  'iso2c', destination = 'iso3c')
+}
+
+#Now, using the clean coordinates package, we are going to flag some problems in our database
+library(CoordinateCleaner)
+library(rnaturalearthdata)
+
+flags=list()
+for(i in 1:length(df_list)){
+  flags[[i]] <- clean_coordinates(x = df_list[[i]],
+                           lon = "decimalLongitude",
+                           lat = "decimalLatitude",
+                           countries = "countryCode",
+                           species = "species",
+                           tests = c("capitals", "centroids", "equal","gbif", "institutions",
+                                     "zeros", "countries",'seas'))
+}
+
+
+
+data_clean=list()
+for(i in 1:length(df_list)){
+  data_clean[[i]]=df_list[[i]][flags[[i]]$.summary,]
+}
+#Checking how many records are out:
+for(i in 1:length(df_list)){
+  print(df_list[[i]]$species%>%unique())
+  print(df_list[[i]]%>%nrow())
+  print(data_clean[[i]]%>%nrow())
+}
+
+#Checking temporal issues with data:
+for(i in 1:length(data_clean)){
+  temp_flags[[i]] <- cf_age(x = data_clean[[i]],
+                lon = "decimalLongitude",
+                lat = "decimalLatitude",
+                taxon = "species",
+                min_age = "year",
+                max_age = "year",
+                value = "flagged")
+}
+#Testing temporal outliers on taxon level
+#Flagged 0 records.
+#Remove unsuitable data sources
+for(i in 1:length(data_clean)){
+  print(i)
+  print(data_clean[[i]]$basisOfRecord%>%unique())
+}
+
+#We don't need to remove any records
+#Excluding very old records might be a good idea, specially if these records are before second world war
+#Due to low quality technology.
+#Age of records
+for(i in 1:length(data_clean)){print(table(data_clean[[i]]$year))}
+#Checking witch spp has no year record
+for(i in 1:length(data_clean)){
+  print(i)
+  print(data_clean[[i]]$species%>%unique())
+  print(names(data_clean[[i]]))
+}
+#Dataframe position 16
+data_notyear=data_clean[[16]]
+data_clean2 = data_clean[-16]
+
+
+for(i in 1:length(data_clean2)){
+  data_clean2[[i]]=data_clean2[[i]]%>%filter(year>=1970)
+}
+
+data_clean_all=c(data_clean2,list(data_notyear))
+
+#Saving
+for(i in 1:length(data_clean_all)){
+  print(data_clean_all[[i]]$species%>%unique())
+}    
+for(i in 1:length(data_clean_all)){
+  write.csv(data_clean_all[[i]],paste0('D:\\Eduardo_Minsky\\Especies_Abelhas\\DataFrameEspecies\\DataFrame_Clean\\',data_clean_all[[i]]$species%>%unique(),'.csv'))
+}
+
+
+```
+
+```{r Creating distance metrics for each spp point}
+
+library(tidyverse)
+library(sf)
+library(sp)
+library(raster)
+library(spatialEco)
+
+
+a = list.files('D:\\Eduardo_Minsky\\Especies_Abelhas\\DataFrameEspecies\\DataFrame_Clean\\',pattern='.csv$')
+list_csv=list()
+for(i in 1:length(a)){
+  list_csv[[i]]=read.csv(paste0('D:\\Eduardo_Minsky\\Especies_Abelhas\\DataFrameEspecies\\DataFrame_Clean\\',a[[i]]))
+}
+
+shape_list=list()
+for(i in 1:length(list_csv)){
+  shape_list[[i]]=st_as_sf(list_csv[[i]],coords=c('decimalLongitude','decimalLatitude'))
+}
+#Average Nearest Neighbor Index (NNI) 
+nni_list=list(list())
+for(i in 1:length(shape_list)){
+  nni_list[[i]]=spatialEco::nni(shape_list[[i]],win = 'extent')
+}
+#Create a unique Dataframe with all that info:
+spp_names=list()
+for(i in 1:length(list_csv)){
+  spp_names[[i]]=list_csv[[i]]$species%>%unique()
+}
+dat_frame=list()
+for(i in 1:length(nni_list)){
+  dat_frame[[i]]=data.frame(Spp_name=spp_names[[i]],Expected_mean_distance=nni_list[[i]][[4]],Observed_mean_distance=nni_list[[i]][[5]])
+  all_data <- do.call(rbind, dat_frame)
+}
+all_data%>%filter(Spp_name=='Euglossa iopyrrha')
+write.csv2(all_data,'D:\\Eduardo_Minsky\\Especies_Abelhas\\DataFrameEspecies\\DataFrame_Clean\\Distance_values_bees.csv')
+```
+
+```{r Creating minimum convex polygon for each spp}
+
+library(tidyverse)
+library(rgdal)
+library(sf)
+library(sp)
+library(raster)
+library(grDevices)
+
+a = list.files('D:\\Eduardo_Minsky\\Especies_Abelhas\\DataFrameEspecies\\DataFrame_Clean\\',pattern='.csv$')
+a =a[-9]
+list_csv=list()
+for(i in 1:length(a)){
+  list_csv[[i]]=read.csv(paste0('D:\\Eduardo_Minsky\\Especies_Abelhas\\DataFrameEspecies\\DataFrame_Clean\\',a[[i]]))
+}
+
+list_csv_coords=list()
+for(i in 1:length(list_csv)){
+  o=list_csv[[i]][,c('species','decimalLongitude','decimalLatitude')]
+  o=st_as_sf(o, coords = c("decimalLongitude", "decimalLatitude"), crs = 4326)#WGS 84
+  list_csv_coords[[i]]=o
+}
+#Creating Convex Hull
+chull=list()
+for(i in 1:length(list_csv_coords)){
+  chull[[i]]=st_convex_hull(st_union(list_csv_coords[[i]]))
+}
+#Saving SF and Hull objects:
+for(i in 1:length(list_csv_coords)){
+  st_write(list_csv_coords[[i]], paste0("D:\\Eduardo_Minsky\\Especies_Abelhas\\DataFrameEspecies\\DataFrame_Clean\\Shapefiles\\",list_csv[[i]]$species%>%unique(),'.shp'))
+}
+
+for(i in 1:length(chull)){
+  st_write(chull[[i]], paste0("D:\\Eduardo_Minsky\\Especies_Abelhas\\DataFrameEspecies\\DataFrame_Clean\\Convex Hull\\",list_csv[[i]]$species%>%unique(),'.shp'))
+}
+```
+
+```{r Deleting duplicate records:}
+library(sf)
+library(tidyverse)
+files = list.files('D:\\Eduardo_Minsky\\Especies_Abelhas\\DataFrameEspecies\\DataFrame_Clean\\Shapefiles\\',pattern='.shp$')
+shp_list=list()
+for(i in 1:length(files)){
+  shp_list[[i]]=st_read(paste0('D:\\Eduardo_Minsky\\Especies_Abelhas\\DataFrameEspecies\\DataFrame_Clean\\Shapefiles\\',files[[i]]))
+}
+
+shp_unique_points_list=list()
+for(i in 1:length(shp_list)){
+  shp_unique_points_list[[i]]=shp_list[[i]]%>%distinct()
+}
+#retainig only shapefiles with more than 3 records
+shp_unique_points_list_2=list()
+for(i in 1:length(shp_unique_points_list)){
+  if(length(shp_unique_points_list[[i]]$geometry)>=3){
+    shp_unique_points_list_2[[i]]=shp_unique_points_list[[i]]
+  }else{print('MENOR q 3')}
+}
+#Deleting null values from the list:
+shp_unique_points_list_2=shp_unique_points_list_2 %>% discard(is.null)
+
+#Saving
+for(i in 1:length(shp_unique_points_list_2)){
+  st_write(shp_unique_points_list_2[[i]],paste0('D:\\Eduardo_Minsky\\Especies_Abelhas\\DataFrameEspecies\\DataFrame_Clean\\Shapefiles\\Shapefiles_unique_points\\',shp_unique_points_list_2[[i]]$species%>%unique(),'_unique.shp'))
+}
+
+```
+
+```{r Spatial rarefaction of the records}
+library(sf)
+library(tidyverse)
+library(spThin)
+files = list.files('D:\\Eduardo_Minsky\\Especies_Abelhas\\DataFrameEspecies\\DataFrame_Clean\\Shapefiles\\Shapefiles_unique_points\\',pattern='.shp$')
+length(files)
+shp_list=list()
+for(i in 1:length(files)){
+  shp_list[[i]]=st_read(paste0('D:\\Eduardo_Minsky\\Especies_Abelhas\\DataFrameEspecies\\DataFrame_Clean\\Shapefiles\\Shapefiles_unique_points\\',files[[i]]))
+}
+
+data_frame_spp = list()
+for( i in 1:length(shp_list)){
+  a =st_coordinates(shp_list[[i]]$geometry)%>%as.data.frame()
+  a$spp=shp_list[[i]]$species%>%unique()
+data_frame_spp[[i]]=a
+
+}
+spp_thin_data=list()
+for(i in 1:length(data_frame_spp)){
+  spp_thin_data[[i]] = thin(loc.data = data_frame_spp[[i]],
+                            lat.col = "Y", long.col = "X",
+                            spec.col = "spp",
+                            thin.par = 1, reps = 5,
+                            locs.thinned.list.return = TRUE,
+                            write.files = FALSE,
+                            write.log.file = FALSE)
+}
+
+for(i in 1:length(spp_thin_data)){
+  for(w in 1:length(spp_thin_data[[i]])){
+    print(data_frame_spp[[i]]$spp%>%unique())
+    print(nrow(spp_thin_data[[i]][[w]]))
+  }
+  
+}
+
+spp_list=list()
+for(i in 1:length(spp_thin_data)){
+  a = spp_thin_data[[i]][[1]]
+  a$spp =data_frame_spp[[i]]$spp%>%unique()
+  spp_list[[i]]=a
+}
+for(i in 1:length(spp_list)){
+  write.csv(spp_list[[i]],paste0('D:\\Eduardo_Minsky\\Especies_Abelhas\\DataFrameEspecies\\DataFrame_Clean\\Shapefiles\\Shapefiles_unique_points\\Ready_to_use_Occ\\',spp_list[[i]]$spp%>%unique(),'.csv'))
+}
+
+```
+
